@@ -140,5 +140,4 @@ vite.config.ts.timestamp-*
 
 #our stuff
 .env
-iracing_cookies.txt
 iracing_maintenance_state.json

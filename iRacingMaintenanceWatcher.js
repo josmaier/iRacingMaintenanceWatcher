@@ -7,7 +7,6 @@ import dotenv from "dotenv";
 import axios from "axios";
 import { wrapper } from "axios-cookiejar-support";
 import { CookieJar } from "tough-cookie";
-import FileCookieStore from "tough-cookie-file-store";
 
 import fs from "fs";
 import path from "path";
@@ -137,7 +136,7 @@ async function makeHttp() {
     const dir = path.dirname(abs);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    const jar = new CookieJar(new FileCookieStore(abs));
+    const jar = new CookieJar();
     const http = wrapper(
         axios.create({
             jar,

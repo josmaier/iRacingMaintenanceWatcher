@@ -5,6 +5,5 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/
 
 # optional
 POLL_SECONDS=120
-IR_COOKIE_JAR=./iracing_cookies.txt
 IR_STATE_FILE=./iracing_maintenance_state.json
 LOG_LEVEL=info
