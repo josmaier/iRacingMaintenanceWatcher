@@ -27,7 +27,7 @@ Directly:
 - node iRacingMaintenanceWatcher.js
 
 With pm2 (recommended):
-- pm2 start ecosystem.config.js
+- pm2 start ecosystem.config.cjs
 - pm2 save
 
 ------------------------------------------------------------
