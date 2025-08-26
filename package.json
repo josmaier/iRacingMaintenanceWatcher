@@ -2,7 +2,7 @@
   "name": "iracing-maintenance-watch",
   "version": "1.0.0",
   "main": "iracing-watch.js",
-  "type": "commonjs",
+  "type": "module",
   "license": "MIT",
   "scripts": {
     "start": "node iracing-watch.js",
@@ -13,6 +13,6 @@
     "axios-cookiejar-support": "^6.0.2",
     "dotenv": "^16.4.5",
     "tough-cookie": "^4.1.3",
-    "tough-cookie-file-store2": "^1.2.0"
+    "tough-cookie-file-store": "^3.2.1"
   }
 }

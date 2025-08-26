@@ -1,8 +1,8 @@
 module.exports = {
   apps: [
     {
-      name: "iracing-watch",
-      script: "iracing-watch.js",
+      name: "iRacingMaintenanceWatcher",
+      script: "iRacingMaintenanceWatcher.js",
       watch: false,
       autorestart: true,
       max_restarts: 10,

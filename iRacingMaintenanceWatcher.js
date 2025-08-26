@@ -3,15 +3,17 @@
  * Auths with Legacy Auth persists cookies polls at set interval from endpoint;
  * sends Discord webhooks only on state change.
  */
+import dotenv from "dotenv";
+import axios from "axios";
+import { wrapper } from "axios-cookiejar-support";
+import { CookieJar } from "tough-cookie";
+import FileCookieStore from "tough-cookie-file-store";
 
-require("dotenv").config(); //We need this
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const axios = require("axios").default; //HTTP Client
-const { CookieJar } = require("tough-cookie");
-const FileCookieStore = require("tough-cookie-file-store2");
-const { wrapper } = require("axios-cookiejar-support");
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+
+dotenv.config();
 
 const IR_AUTH_URL = "https://members-ng.iracing.com/auth";
 const IR_HEALTH_URL = "https://members-ng.iracing.com/data/constants/categories";
@@ -164,6 +166,29 @@ async function pollOnce(http) {
     return interpretResponse(resp.status, resp.data);
 }
 
+//We format the time since we last had a change
+function formatDuration(ms) {
+    const sec = Math.floor(ms / 1000);
+    const units = [
+        ["week", 7 * 24 * 3600],
+        ["day", 24 * 3600],
+        ["hour", 3600],
+        ["minute", 60],
+        ["second", 1],
+    ];
+    const parts = [];
+    let remaining = sec;
+    for (const [name, size] of units) {
+        if (remaining >= size) {
+            const qty = Math.floor(remaining / size);
+            parts.push(`${qty} ${name}${qty !== 1 ? "s" : ""}`);
+            remaining %= size;
+            if (parts.length === 2) break; // keep it short
+        }
+    }
+    return parts.length ? parts.join(" ") : "0 seconds";
+}
+
 
 async function main() {
     const http = await makeHttp();
@@ -202,39 +227,41 @@ async function main() {
             const { inMaintenance, message } = await pollOnce(http);
             const prev = state.in_maintenance;
 
+            const now = Date.now();
+            const lastChangeMs = state.last_change ? Date.parse(state.last_change) : now;
+
             if (prev === null) {
-                // first observation of any status is always sent to check
+                // First observation
                 state.in_maintenance = inMaintenance;
                 saveState(inMaintenance);
 
                 const title = "iRacing Status";
                 if (inMaintenance) {
-                    await sendDiscord(`${title}: Maintenance`, message || "Service is in maintenance.", 0xe67e22);
+                    await sendDiscord(`${title}: Maintenance 🚧`, "Service is currently in maintenance.", 0xe67e22);
                 } else {
-                    await sendDiscord(`${title}: Online`, "API responding normally.", 0x2ecc71);
+                    await sendDiscord(`${title}: Online ✅`, "API responding normally.", 0x2ecc71);
                 }
 
-            } else if (inMaintenance !== prev) {
-                // possible change detected
-                if (pendingChange && pendingChange.target === inMaintenance) {
-                    pendingChange.seen += 1;
-                } else {
-                    pendingChange = { target: inMaintenance, seen: 1 };
-                }
+            } else if (prev === false && inMaintenance === true) {
+                // Entered maintenance → show uptime since last 'online'
+                const uptime = formatDuration(now - lastChangeMs);
+                const desc = `Maintenance started 🚧\n(Uptime before this: ${uptime})`;
+                await sendDiscord("iRacing entered maintenance", desc, 0xe67e22);
 
-                // we wait for a second confirming status so that we do not send it when the api just sends one code
-                if (pendingChange.seen >= 2) {
-                    if (inMaintenance) {
-                        await sendDiscord("iRacing entered maintenance", message || "Service is in maintenance.", 0xe67e22);
-                    } else {
-                        await sendDiscord("iRacing is back online", "API responding normally.", 0x2ecc71);
-                    }
-                    state.in_maintenance = inMaintenance;
-                    saveState(inMaintenance);
-                    pendingChange = null; // reset guard
-                }
+                state.in_maintenance = true;
+                saveState(true);
 
-            } else {
+            } else if (prev === true && inMaintenance === false) {
+                // Back online → show downtime since last 'maintenance'
+                const downtime = formatDuration(now - lastChangeMs);
+                const desc = `Back online ✅\n(Downtime lasted: ${downtime})`;
+                await sendDiscord("iRacing is back online", desc, 0x2ecc71);
+
+                state.in_maintenance = false;
+                saveState(false);
+            }
+
+            else {
                 pendingChange = null;
             }
 
@@ -242,12 +269,12 @@ async function main() {
             log("warn", `Poll error: ${e.message}`);
         }
 
-            await new Promise((r) => setTimeout(r, POLL_SECONDS * 1000));
-        }
+        await new Promise((r) => setTimeout(r, POLL_SECONDS * 1000));
     }
-    
-    // Start the main function and handle errors
-    main().catch((e) => {
-        console.error(e);
-        process.exit(1);
-    });
+}
+
+// Start the main function and handle errors
+main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+});
