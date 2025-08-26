@@ -1,26 +1,49 @@
-![MIT License](https://img.shields.io/badge/License-MIT-yellow.svg)
+MIT License: https://img.shields.io/badge/License-MIT-yellow.svg
+
 # iRacingMaintenanceWatcher
-Script that watches the iRacing API for maintenance.
 
-I do not provide support for this script or guarantee that it stays working
+A Node.js script that watches the iRacing API for maintenance and posts status updates to a Discord webhook.
 
-# How to use
+Note:
+I do not provide support for this script or guarantee that it will always work.
+iRacing may change their API at any time.
 
-Rename the dotenv file to .env and add all required variables.
-Afterwards either:
-    - npm install
-    - node iRacingMaintenanceWatcher.js
+------------------------------------------------------------
 
-Or:
-    -npm install
-    -pm2 start ecosystem.config.js
+## How to Use
 
-# What it actually does
-The script pulls from the iRacing api every 120 seconds (default).
-If it observes a state change in the iRacing status, it logs it and waits for a confirming second status message. If the status is the same both times it sends out a discord embed to the specified webhook url.
-It includes up/downtime by just subtracting current time from last time and formatting it to a better format.
+1. Rename `dotenv` to `.env` and fill in all required variables.
+2. Install dependencies:
 
-# License
+   npm install
 
-This project is licensed under the MIT License.  
+3. Run the script in one of two ways:
+
+   Directly:
+     node iRacingMaintenanceWatcher.js
+
+   With pm2 (recommended):
+     pm2 start ecosystem.config.js
+     pm2 save
+
+------------------------------------------------------------
+
+## What It Does
+
+- Polls the iRacing API every 120 seconds (default, configurable).
+- On each poll, checks if the service is:
+  - online
+  - or in maintenance
+- If a state change is observed:
+  - Waits for a second confirmation
+  - Sends a Discord embed to the configured webhook with:
+    * Current status
+    * Uptime or downtime duration (calculated from the last change timestamp)
+
+------------------------------------------------------------
+
+## License
+
+This project is licensed under the MIT License.
+See the LICENSE file for details.
 See the [LICENSE](./LICENSE) file for details.
