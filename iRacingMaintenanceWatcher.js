@@ -22,7 +22,7 @@ const EMAIL = process.env.IR_EMAIL;
 const PASSWORD = process.env.IR_PASSWORD;
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-const POLL_SECONDS = Number(process.env.POLL_SECONDS || 300); //default 5 minutes
+const POLL_SECONDS = Number(process.env.POLL_SECONDS || 120); //default 2 minutes
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
 
 const COOKIES_PATH = process.env.IR_COOKIE_JAR || "./iracing_cookies.txt";
