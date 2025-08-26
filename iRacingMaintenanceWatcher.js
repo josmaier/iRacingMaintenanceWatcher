@@ -9,7 +9,6 @@ import { wrapper } from "axios-cookiejar-support";
 import { CookieJar } from "tough-cookie";
 
 import fs from "fs";
-import path from "path";
 import crypto from "crypto";
 
 dotenv.config();
@@ -17,9 +16,9 @@ dotenv.config();
 const IR_AUTH_URL = "https://members-ng.iracing.com/auth";
 const IR_HEALTH_URL = "https://members-ng.iracing.com/data/constants/categories";
 
-const EMAIL = process.env.IR_EMAIL;
-const PASSWORD = process.env.IR_PASSWORD;
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+const EMAIL = (process.env.IR_EMAIL || "").trim();
+const PASSWORD = process.env.IR_PASSWORD || "";
+const DISCORD_WEBHOOK_URL = (process.env.DISCORD_WEBHOOK_URL || "").trim();
 
 const POLL_SECONDS = Number(process.env.POLL_SECONDS || 120); //default 2 minutes
 const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
@@ -112,8 +111,13 @@ function interpretResponse(status, body) {
 //just logging into iRacing with our http client and waiting for the result
 async function iracingAuth(http) {
     const payload = { email: EMAIL, password: hashPassword(EMAIL, PASSWORD) };
-    const resp = await http.post(IR_AUTH_URL, payload, { timeout: HTTP_TIMEOUT });
-    if (resp.status !== 200) throw new Error(`Auth failed: ${resp.status} ${resp.statusText}`);
+    const resp = await http.post(IR_AUTH_URL, payload, {
+        timeout: HTTP_TIMEOUT,
+        headers: { "Content-Type": "application/json" }
+    });
+    if (resp.status !== 200) {
+        throw new Error(`Auth failed: ${resp.status} ${resp.statusText} :: ${resp.data ? JSON.stringify(resp.data) : ""}`);
+    }
     log("info", "Authenticated successfully.");
 }
 
@@ -132,26 +136,24 @@ function maybeBackoffForRateLimit(resp) {
 
 //Builds the GET request to the server
 async function makeHttp() {
-    const abs = path.resolve(COOKIES_PATH);
-    const dir = path.dirname(abs);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    const jar = new CookieJar();
+    const jar = new CookieJar(); // in-memory; persists while process runs
     const http = wrapper(
         axios.create({
             jar,
             withCredentials: true,
             timeout: HTTP_TIMEOUT,
+            maxRedirects: 5, // <- important so Set-Cookie on redirects is captured
             headers: { "User-Agent": "iracing-maintenance-watch-node/1.0 (+discord)" },
             validateStatus: () => true
         })
     );
-    return http;
+    return { http, jar }; // <- return both
 }
 
 //Just send our poll requjest once, if we get unauthorized, authenticate again
 async function pollOnce(http) {
     let resp = await http.get(IR_HEALTH_URL);
+    log("debug", "Polling iRacing");
     if (resp.status === 401) {
         log("info", "401 (unauthorized). Re-authenticating…");
         await iracingAuth(http);
@@ -190,17 +192,27 @@ function formatDuration(ms) {
 
 
 async function main() {
-    const http = await makeHttp();
+    const { http, jar } = await makeHttp();
 
     //If the script is started and we do not have a login cookie yet, we need to get one
+
     try {
-        if (!fs.existsSync(COOKIES_PATH) || fs.statSync(COOKIES_PATH).size === 0) {
-            log("info", "No cookie jar yet; authenticating.");
-            await iracingAuth(http);
-        }
+        await iracingAuth(http);
     } catch (e) {
-        log("warn", `Cookie check/auth issue: ${e.message}`);
+        log("error", `Initial auth failed: ${e.message}`);
     }
+
+    try {
+        const serialized = jar.serializeSync(); // tough-cookie v4 has serializeSync
+        log("debug", `Cookies after auth (serializeSync): ${JSON.stringify(serialized.cookies || [])}`);
+
+        // Also confirm what cookies are considered valid for the domain:
+        const cookiesForMembers = jar.getCookiesSync("https://members-ng.iracing.com");
+        log("debug", `Cookies visible for members-ng.iracing.com: ${cookiesForMembers.map(c => c.key + "=" + c.value).join("; ") || "(none)"}`);
+    } catch (e) {
+        log("warn", `Cookie debug failed: ${e.message}`);
+    }
+
 
     //first check
     const state = loadState();
@@ -218,56 +230,67 @@ async function main() {
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
 
+    
     // keep track of possible state change in progress
     let pendingChange = null; // { target: boolean, seen: number }
 
     while (!stopping) {
+        
+        log("debug", `in loop`);
         try {
             const { inMaintenance, message } = await pollOnce(http);
             const prev = state.in_maintenance;
-
             const now = Date.now();
             const lastChangeMs = state.last_change ? Date.parse(state.last_change) : now;
 
             if (prev === null) {
-                // First observation
+                // First observation → one status message (no duration)
                 state.in_maintenance = inMaintenance;
                 saveState(inMaintenance);
 
                 const title = "iRacing Status";
                 if (inMaintenance) {
-                    await sendDiscord(`${title}: Maintenance 🚧`, "Service is currently in maintenance.", 0xe67e22);
+                    await sendDiscord(`${title}: Maintenance`, message || "Service is in maintenance.", 0xe67e22);
                 } else {
-                    await sendDiscord(`${title}: Online ✅`, "API responding normally.", 0x2ecc71);
+                    await sendDiscord(`${title}: Online`, "API responding normally.", 0x2ecc71);
                 }
 
-            } else if (prev === false && inMaintenance === true) {
-                // Entered maintenance → show uptime since last 'online'
-                const uptime = formatDuration(now - lastChangeMs);
-                const desc = `Maintenance started 🚧\n(Uptime before this: ${uptime})`;
-                await sendDiscord("iRacing entered maintenance", desc, 0xe67e22);
+            } else if (inMaintenance !== prev) {
+                // Potential change detected: require two consecutive confirmations
+                if (pendingChange && pendingChange.target === inMaintenance) {
+                    pendingChange.seen += 1;
+                } else {
+                    pendingChange = { target: inMaintenance, seen: 1 };
+                }
 
-                state.in_maintenance = true;
-                saveState(true);
+                if (pendingChange.seen >= 2) {
+                    // Confirmed change → compute duration of the previous state
+                    const elapsed = now - lastChangeMs;
 
-            } else if (prev === true && inMaintenance === false) {
-                // Back online → show downtime since last 'maintenance'
-                const downtime = formatDuration(now - lastChangeMs);
-                const desc = `Back online ✅\n(Downtime lasted: ${downtime})`;
-                await sendDiscord("iRacing is back online", desc, 0x2ecc71);
+                    if (inMaintenance) {
+                        const uptime = formatDuration(elapsed);
+                        const desc = `Maintenance started.\n(Uptime: ${uptime})`;
+                        await sendDiscord("iRacing entered maintenance", desc, 0xe67e22);
+                    } else {
+                        const downtime = formatDuration(elapsed);
+                        const desc = `Service restored.\n(Downtime: ${downtime})`;
+                        await sendDiscord("iRacing is back online", desc, 0x2ecc71);
+                    }
 
-                state.in_maintenance = false;
-                saveState(false);
-            }
+                    state.in_maintenance = inMaintenance;
+                    saveState(inMaintenance);       // updates last_change to now
+                    pendingChange = null;           // reset guard
+                }
 
-            else {
+            } else {
+                // No change → clear any partial guard
                 pendingChange = null;
             }
 
         } catch (e) {
             log("warn", `Poll error: ${e.message}`);
         }
-
+        log("debug", `Sleeping ${POLL_SECONDS}s before next poll`);
         await new Promise((r) => setTimeout(r, POLL_SECONDS * 1000));
     }
 }
