@@ -6,8 +6,10 @@
 import dotenv from "dotenv";
 import axios from "axios";
 import { wrapper } from "axios-cookiejar-support";
-import { CookieJar } from "tough-cookie";
-
+import { CookieJar, Cookie, MemoryCookieStore } from "tough-cookie";
+import dns from "dns";
+// Prefer IPv4 addresses without custom agents (works on Node 17+)
+dns.setDefaultResultOrder("ipv4first");
 import fs from "fs";
 import crypto from "crypto";
 
@@ -110,15 +112,85 @@ function interpretResponse(status, body) {
 
 //just logging into iRacing with our http client and waiting for the result
 async function iracingAuth(http) {
-    const payload = { email: EMAIL, password: hashPassword(EMAIL, PASSWORD) };
-    const resp = await http.post(IR_AUTH_URL, payload, {
-        timeout: HTTP_TIMEOUT,
-        headers: { "Content-Type": "application/json" }
-    });
-    if (resp.status !== 200) {
-        throw new Error(`Auth failed: ${resp.status} ${resp.statusText} :: ${resp.data ? JSON.stringify(resp.data) : ""}`);
+  const payload = { email: EMAIL, password: hashPassword(EMAIL, PASSWORD) };
+  const resp = await http.post(IR_AUTH_URL, payload, {
+    timeout: HTTP_TIMEOUT,
+    headers: { "Content-Type": "application/json" },
+    maxRedirects: 0
+  });
+
+  if (resp.status !== 200 && !(resp.status >= 300 && resp.status < 400)) {
+    throw new Error(`Auth failed: ${resp.status} ${resp.statusText} :: ${resp.data ? JSON.stringify(resp.data) : ""}`);
+  }
+  log("info", "Authenticated successfully.");
+
+  // Gather Set-Cookie lines
+  let setCookies = [];
+  const raw = resp?.request?.res?.rawHeaders;
+  if (Array.isArray(raw)) {
+    for (let i = 0; i < raw.length - 1; i += 2) {
+      if (String(raw[i]).toLowerCase() === "set-cookie") setCookies.push(String(raw[i + 1] || ""));
     }
-    log("info", "Authenticated successfully.");
+  }
+  if (!setCookies.length && Array.isArray(resp.headers?.["set-cookie"])) {
+    setCookies = resp.headers["set-cookie"];
+  }
+  log("debug", `Normalized Set-Cookie count: ${Array.isArray(resp.headers?.["set-cookie"]) ? resp.headers["set-cookie"].length : 0}`);
+  log("debug", `Raw Set-Cookie count: ${setCookies.length}`);
+
+  // Helper: pull a cookie's value out of a Set-Cookie line (without parsing attributes)
+  const pull = (name) => {
+    for (const line of setCookies) {
+      const m = new RegExp(`^\\s*${name}=([^;]*)`, "i").exec(line);
+      if (m) return m[1] || ""; // may already be percent-encoded
+    }
+    return "";
+  };
+
+  // 1) Insert via normal path (loose)
+  for (const sc of setCookies) {
+    try {
+      http.defaults.jar.setCookieSync(sc, IR_AUTH_URL, { ignoreError: true, looseMode: true });
+    } catch (e) {
+      log("warn", `setCookieSync (raw) failed: ${e.message}`);
+    }
+  }
+
+  // 2) If values are still empty, build Cookie objects manually and add them
+  const want = [
+    { key: "irsso_membersv2", domain: "iracing.com", httpOnly: true, secure: true, sameSite: "Strict" },
+    { key: "authtoken_members", domain: "iracing.com", httpOnly: true, secure: true, sameSite: "Strict" }
+  ];
+
+  for (const w of want) {
+    const have = http.defaults.jar.getCookiesSync(IR_AUTH_URL).find(c => c.key === w.key && c.value);
+    if (!have) {
+      const v = pull(w.key);
+      if (v) {
+        const cookieObj = new Cookie({
+          key: w.key,
+          value: v,                 // keep whatever encoding the server used
+          domain: w.domain,
+          path: "/",
+          httpOnly: w.httpOnly,
+          secure: w.secure,
+          sameSite: w.sameSite
+        });
+        try {
+          http.defaults.jar.setCookieSync(cookieObj, IR_AUTH_URL, { ignoreError: true, looseMode: true });
+          log("debug", `Manually inserted cookie: ${w.key} (length ${v.length})`);
+        } catch (e) {
+          log("warn", `Manual insert failed for ${w.key}: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // 3) As an additional guard, set a per-instance Cookie header for the auth domain
+  try {
+    const s = http.defaults.jar.getCookieStringSync(IR_AUTH_URL);
+    if (s) http.defaults.headers.Cookie = s;
+  } catch {}
 }
 
 //When iRacing gets mad at us for the rate we send messages, we just wait for a bit
@@ -136,17 +208,28 @@ function maybeBackoffForRateLimit(resp) {
 
 //Builds the GET request to the server
 async function makeHttp() {
-    const jar = new CookieJar(); // in-memory; persists while process runs
+    const jar = new CookieJar(undefined, { looseMode: true });// in-memory; persists while process runs
     const http = wrapper(
         axios.create({
             jar,
             withCredentials: true,
             timeout: HTTP_TIMEOUT,
-            maxRedirects: 5, // <- important so Set-Cookie on redirects is captured
+            maxRedirects: 5,
+            proxy: false,
             headers: { "User-Agent": "iracing-maintenance-watch-node/1.0 (+discord)" },
             validateStatus: () => true
         })
     );
+    
+    http.interceptors.request.use((config) => {
+  try {
+    const url = config.baseURL ? new URL(config.url || "", config.baseURL).href : (config.url || "");
+    const target = url.startsWith("http") ? url : IR_HEALTH_URL; // best effort
+    const cookieHeader = http.defaults.jar.getCookieStringSync(target);
+    if (cookieHeader) config.headers.Cookie = cookieHeader;
+  } catch {}
+  return config;
+    });
     return { http, jar }; // <- return both
 }
 
@@ -270,10 +353,12 @@ async function main() {
                     if (inMaintenance) {
                         const uptime = formatDuration(elapsed);
                         const desc = `Maintenance started.\n(Uptime: ${uptime})`;
+                        state.last_change = now;
                         await sendDiscord("iRacing entered maintenance", desc, 0xe67e22);
                     } else {
                         const downtime = formatDuration(elapsed);
                         const desc = `Service restored.\n(Downtime: ${downtime})`;
+                        state.last_change = now;
                         await sendDiscord("iRacing is back online", desc, 0x2ecc71);
                     }
 
