@@ -67,12 +67,8 @@ function loadState() {
 }
 
 //Saves the current state in the json file (so we do not loose it if the script breaks)
-function saveState(inMaintenance, timestamp) {
-    const state = { 
-        in_maintenance: inMaintenance, 
-        last_change: timestamp 
-    };
-    
+function saveState(inMaintenance) {
+    const state = { in_maintenance: inMaintenance, last_change: utcNowISO() };
     fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
@@ -328,13 +324,12 @@ async function main() {
             const { inMaintenance, message } = await pollOnce(http);
             const prev = state.in_maintenance;
             const now = Date.now();
-            const tempTimeNow = utcNowISO();
             const lastChangeMs = state.last_change ? Date.parse(state.last_change) : now;
 
             if (prev === null) {
                 // First observation → one status message (no duration)
                 state.in_maintenance = inMaintenance;
-                saveState(inMaintenance, tempTimeNow);
+                saveState(inMaintenance);
 
                 const title = "iRacing Status";
                 if (inMaintenance) {
@@ -353,7 +348,7 @@ async function main() {
 
                 if (pendingChange.seen >= 2) {
                     // Confirmed change → compute duration of the previous state
-                    const elapsed = now - lastChangeMs;
+                    const elapsed = lastChangeMs - now;
 
                     if (inMaintenance) {
                         const uptime = formatDuration(elapsed);
@@ -368,7 +363,7 @@ async function main() {
                     }
 
                     state.in_maintenance = inMaintenance;
-                    saveState(inMaintenance, tempTimeNow);       // updates last_change to now
+                    saveState(inMaintenance);       // updates last_change to now
                     pendingChange = null;           // reset guard
                 }
 
