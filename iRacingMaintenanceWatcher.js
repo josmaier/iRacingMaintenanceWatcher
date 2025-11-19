@@ -332,7 +332,7 @@ async function main() {
             if (prev === null) {
                 // First observation → one status message (no duration)
                 state.in_maintenance = inMaintenance;
-                state.last_chage = now;
+                state.last_change = now;
                 saveState(state);
 
                 const title = "iRacing Status";
