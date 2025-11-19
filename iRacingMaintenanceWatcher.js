@@ -67,9 +67,12 @@ function loadState() {
 }
 
 //Saves the current state in the json file (so we do not loose it if the script breaks)
-function saveState(inMaintenance) {
-    const state = { in_maintenance: inMaintenance, last_change: utcNowISO() };
-    fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+function saveState(state) {
+    // OLD: updates maintainance flag but also updates with own timeflag
+    //const state = { in_maintenance: inMaintenance, last_change: utcNowISO() };
+    // NEW: simply uses whatever has been set in main-loop
+    const newState = state;
+    fs.writeFileSync(STATE_PATH, JSON.stringify(newState, null, 2));
 }
 
 //Send the webhook message with the http client
@@ -329,7 +332,8 @@ async function main() {
             if (prev === null) {
                 // First observation → one status message (no duration)
                 state.in_maintenance = inMaintenance;
-                saveState(inMaintenance);
+                state.last_chage = now;
+                saveState(state);
 
                 const title = "iRacing Status";
                 if (inMaintenance) {
@@ -353,18 +357,17 @@ async function main() {
                     if (inMaintenance) {
                         const uptime = formatDuration(elapsed);
                         const desc = `Maintenance started.\n(Uptime: ${uptime})`;
-                        state.last_change = now;
                         await sendDiscord("iRacing entered maintenance", desc, 0xe67e22);
                     } else {
                         const downtime = formatDuration(elapsed);
                         const desc = `Service restored.\n(Downtime: ${downtime})`;
-                        state.last_change = now;
                         await sendDiscord("iRacing is back online", desc, 0x2ecc71);
                     }
 
-                    state.in_maintenance = inMaintenance;
-                    saveState(inMaintenance);       // updates last_change to now
-                    pendingChange = null;           // reset guard
+                    state.in_maintenance = inMaintenance;   // updates maintainance flag to current state
+                    state.last_change = now;                // updates change-timestamp to right neow
+                    saveState(state);                       // updates state-file
+                    pendingChange = null;                   // reset guard
                 }
 
             } else {
