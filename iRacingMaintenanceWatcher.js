@@ -348,7 +348,7 @@ async function main() {
 
                 if (pendingChange.seen >= 2) {
                     // Confirmed change → compute duration of the previous state
-                    const elapsed = now - lastChangeMs;
+                    const elapsed = lastChangeMs - now;
 
                     if (inMaintenance) {
                         const uptime = formatDuration(elapsed);
